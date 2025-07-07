@@ -26,34 +26,44 @@ class DoclingParseV4PageBackend(PdfPageBackend):
         self._ppage = page_obj
         self._dpage = parsed_page
         self.valid = parsed_page is not None
+        # Cache page size
+        self._cached_size = None
 
     def is_valid(self) -> bool:
         return self.valid
 
     def get_text_in_rect(self, bbox: BoundingBox) -> str:
-        # Find intersecting cells on the page
-        text_piece = ""
+        """Returns concatenated text of cells where bbox overlaps more than 0.5"""
+        # Compute page size and scale once
         page_size = self.get_size()
-
+        page_height = page_size.height
         scale = (
-            1  # FIX - Replace with param in get_text_in_rect across backends (optional)
+            1  # FIX - replace with param in get_text_in_rect across backends (optional)
         )
+        # Precompute results
+        results = []
+        # Only call bbox.to_top_left_origin/scale ONCE per cell
+        bbox_cache = {}
+        # Precompute bbox to use as target for intersection
+        target_bbox = bbox
+        textline_cells = self._dpage.textline_cells
 
-        for i, cell in enumerate(self._dpage.textline_cells):
-            cell_bbox = (
-                cell.rect.to_bounding_box()
-                .to_top_left_origin(page_height=page_size.height)
-                .scaled(scale)
-            )
-
-            overlap_frac = cell_bbox.intersection_over_self(bbox)
-
+        for cell in textline_cells:
+            # Key by cell id to avoid repeat allocations if needed
+            if id(cell) not in bbox_cache:
+                cell_bbox = cell.rect.to_bounding_box()
+                # Optimization - many bounding box transformations are chained, fuse them to a single function if possible
+                cell_bbox = cell_bbox.to_top_left_origin(page_height=page_height)
+                if scale != 1:
+                    cell_bbox = cell_bbox.scaled(scale)
+                bbox_cache[id(cell)] = cell_bbox
+            else:
+                cell_bbox = bbox_cache[id(cell)]
+            overlap_frac = cell_bbox.intersection_over_self(target_bbox)
             if overlap_frac > 0.5:
-                if len(text_piece) > 0:
-                    text_piece += " "
-                text_piece += cell.text
-
-        return text_piece
+                results.append(cell.text)
+        # String concatenation was previously quadratic; now it's linear
+        return " ".join(results)
 
     def get_segmented_page(self) -> Optional[SegmentedPdfPage]:
         return self._dpage
@@ -113,9 +123,13 @@ class DoclingParseV4PageBackend(PdfPageBackend):
         return image
 
     def get_size(self) -> Size:
-        with pypdfium2_lock:
-            return Size(width=self._ppage.get_width(), height=self._ppage.get_height())
-
+        # Cache the page size to avoid repeated expensive calls/locking
+        if self._cached_size is None:
+            with pypdfium2_lock:
+                self._cached_size = Size(
+                    width=self._ppage.get_width(), height=self._ppage.get_height()
+                )
+        return self._cached_size
         # TODO: Take width and height from docling-parse.
         # return Size(
         #    width=self._dpage.dimension.width,
