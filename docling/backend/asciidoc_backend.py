@@ -34,18 +34,24 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
 
         try:
             if isinstance(self.path_or_stream, BytesIO):
-                text_stream = self.path_or_stream.getvalue().decode("utf-8")
-                self.lines = text_stream.split("\n")
-            if isinstance(self.path_or_stream, Path):
+                # Avoid extra variable, no need for "\n" split if decoding to str and then splitlines() (handles universal line breaks)
+                self.lines = self.path_or_stream.getvalue().decode("utf-8").splitlines()
+            elif isinstance(self.path_or_stream, Path):
+                # Use generator expression to strip trailing newlines (faster, eliminates need for keeping \n)
                 with open(self.path_or_stream, encoding="utf-8") as f:
-                    self.lines = f.readlines()
+                    self.lines = [line.rstrip("\n\r") for line in f]
+            else:
+                raise RuntimeError(
+                    "Unsupported type for path_or_stream: {}".format(
+                        type(self.path_or_stream)
+                    )
+                )
             self.valid = True
 
         except Exception as e:
             raise RuntimeError(
                 f"Could not initialize AsciiDoc backend for file with hash {self.document_hash}."
             ) from e
-        return
 
     def is_valid(self) -> bool:
         return self.valid
@@ -357,7 +363,8 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     #   =========   Tables
     @staticmethod
     def _is_table_line(line):
-        return re.match(r"^\|.*\|", line)
+        # Use precompiled pattern for faster match
+        return _TABLE_LINE_RE.match(line)
 
     @staticmethod
     def _parse_table_line(line):
@@ -441,3 +448,6 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     @staticmethod
     def _parse_text(line):
         return {"type": "text", "text": line.strip()}
+
+
+_TABLE_LINE_RE = re.compile(r"^\|.*\|")
