@@ -30,22 +30,22 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     def __init__(self, in_doc: InputDocument, path_or_stream: Union[BytesIO, Path]):
         super().__init__(in_doc, path_or_stream)
 
-        self.path_or_stream = path_or_stream
-
+        # Efficient uniform lines loading for both BytesIO and Path
         try:
-            if isinstance(self.path_or_stream, BytesIO):
-                text_stream = self.path_or_stream.getvalue().decode("utf-8")
-                self.lines = text_stream.split("\n")
-            if isinstance(self.path_or_stream, Path):
-                with open(self.path_or_stream, encoding="utf-8") as f:
-                    self.lines = f.readlines()
+            if isinstance(path_or_stream, BytesIO):
+                text_stream = path_or_stream.getvalue().decode("utf-8")
+                self.lines = text_stream.splitlines()
+            elif isinstance(path_or_stream, Path):
+                with open(path_or_stream, encoding="utf-8") as f:
+                    self.lines = f.read().splitlines()
+            else:
+                raise ValueError("Unsupported input type for path_or_stream")
             self.valid = True
 
         except Exception as e:
             raise RuntimeError(
                 f"Could not initialize AsciiDoc backend for file with hash {self.document_hash}."
             ) from e
-        return
 
     def is_valid(self) -> bool:
         return self.valid
@@ -316,7 +316,8 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     #   =========   Lists
     @staticmethod
     def _is_list_item(line):
-        return re.match(r"^(\s)*(\*|-|\d+\.|\w+\.) ", line)
+        # Use precompiled regex for performance
+        return _LIST_ITEM_PATTERN.match(line)
 
     @staticmethod
     def _parse_list_item(line):
@@ -441,3 +442,6 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     @staticmethod
     def _parse_text(line):
         return {"type": "text", "text": line.strip()}
+
+
+_LIST_ITEM_PATTERN = re.compile(r"^(\s)*(\*|-|\d+\.|\w+\.) ")
