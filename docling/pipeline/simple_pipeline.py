@@ -9,6 +9,7 @@ from docling.datamodel.document import ConversionResult
 from docling.datamodel.pipeline_options import PipelineOptions
 from docling.pipeline.base_pipeline import BasePipeline
 from docling.utils.profiling import ProfilingScope, TimeRecorder
+from functools import lru_cache
 
 _log = logging.getLogger(__name__)
 
@@ -52,4 +53,12 @@ class SimplePipeline(BasePipeline):
 
     @classmethod
     def is_backend_supported(cls, backend: AbstractDocumentBackend):
-        return isinstance(backend, DeclarativeDocumentBackend)
+        # Cache type checks for backend types to accelerate repeated isinstance()
+        backend_type = type(backend)
+        return _is_decl_backend_type(backend_type)
+
+
+@lru_cache(maxsize=32)
+def _is_decl_backend_type(backend_type):
+    # This is separated to allow lru_cache to work on types (not instances)
+    return issubclass(backend_type, DeclarativeDocumentBackend)
