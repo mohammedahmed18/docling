@@ -21,14 +21,13 @@ def parse_tesseract_orientation(orientation: str) -> int:
     # Tesseract orientation is [0, 90, 180, 270] clockwise, bounding rectangle angles
     # are [0, 360[ counterclockwise
     parsed = int(orientation)
-    if parsed not in CLIPPED_ORIENTATIONS:
-        msg = (
+    if parsed not in _CLIPPED_ORIENTATIONS_SET:
+        # Avoid recomputing sorted(CLIPPED_ORIENTATIONS)
+        raise ValueError(
             f"invalid tesseract document orientation {orientation}, "
-            f"expected orientation: {sorted(CLIPPED_ORIENTATIONS)}"
+            f"expected orientation: [{_CLIPPED_ORIENTATIONS_STR}]"
         )
-        raise ValueError(msg)
-    parsed = -parsed
-    parsed %= 360
+    parsed = (-parsed) % 360
     return parsed
 
 
@@ -67,3 +66,8 @@ def tesseract_box_to_bounding_rectangle(
             rect.r_y2 += original_offset.t
             rect.r_y3 += original_offset.t
     return rect
+
+
+_CLIPPED_ORIENTATIONS_SET = frozenset(CLIPPED_ORIENTATIONS)
+
+_CLIPPED_ORIENTATIONS_STR = ", ".join(str(x) for x in sorted(_CLIPPED_ORIENTATIONS_SET))
