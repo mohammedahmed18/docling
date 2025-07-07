@@ -29,23 +29,21 @@ DEFAULT_IMAGE_HEIGHT: Final = 128
 class AsciiDocBackend(DeclarativeDocumentBackend):
     def __init__(self, in_doc: InputDocument, path_or_stream: Union[BytesIO, Path]):
         super().__init__(in_doc, path_or_stream)
-
-        self.path_or_stream = path_or_stream
-
         try:
-            if isinstance(self.path_or_stream, BytesIO):
-                text_stream = self.path_or_stream.getvalue().decode("utf-8")
-                self.lines = text_stream.split("\n")
-            if isinstance(self.path_or_stream, Path):
-                with open(self.path_or_stream, encoding="utf-8") as f:
-                    self.lines = f.readlines()
+            if isinstance(path_or_stream, BytesIO):
+                # Avoid newlines, do more memory-efficient, fast split
+                text_stream = path_or_stream.getvalue().decode("utf-8")
+                self.lines = text_stream.splitlines()
+            elif isinstance(path_or_stream, Path):
+                with open(path_or_stream, encoding="utf-8") as f:
+                    self.lines = f.read().splitlines()
+            else:
+                raise TypeError("path_or_stream must be BytesIO or Path")
             self.valid = True
-
         except Exception as e:
             raise RuntimeError(
                 f"Could not initialize AsciiDoc backend for file with hash {self.document_hash}."
             ) from e
-        return
 
     def is_valid(self) -> bool:
         return self.valid
@@ -426,7 +424,7 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     #   =========   Captions
     @staticmethod
     def _is_caption(line):
-        return re.match(r"^\.(.+)", line)
+        return _CAPTION_PATTERN.match(line)
 
     @staticmethod
     def _parse_caption(line):
@@ -441,3 +439,6 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     @staticmethod
     def _parse_text(line):
         return {"type": "text", "text": line.strip()}
+
+
+_CAPTION_PATTERN = re.compile(r"^\.(.+)")
