@@ -137,9 +137,9 @@ class InputDocument(BaseModel):
                     self._init_doc(backend, path_or_stream)
 
             elif isinstance(path_or_stream, BytesIO):
-                assert filename is not None, (
-                    "Can't construct InputDocument from stream without providing filename arg."
-                )
+                assert (
+                    filename is not None
+                ), "Can't construct InputDocument from stream without providing filename arg."
                 self.file = PurePath(filename)
                 self.filesize = path_or_stream.getbuffer().nbytes
 
@@ -403,28 +403,26 @@ class _DocumentConversionInput(BaseModel):
             The mime type of an XHTML, HTML, or XML file, or None if the content does
               not match any of these formats.
         """
-        content_str = content.decode("ascii", errors="ignore").lower()
-        # Remove XML comments
-        content_str = re.sub(r"<!--(.*?)-->", "", content_str, flags=re.DOTALL)
-        content_str = content_str.lstrip()
+        # Remove XML comments (in bytes for efficiency)
+        content_wo_comments = _COMMENT_RE.sub(b"", content, count=0)
+        # Strip leading whitespace
+        content_wo_comments = content_wo_comments.lstrip()
 
-        if re.match(r"<\?xml", content_str):
-            if "xhtml" in content_str[:1000]:
+        # Fast path: Detect if file starts with <?xml
+        if _XML_DECL_RE.match(content_wo_comments):
+            # Look ahead for 'xhtml' in first 1000 chars (case-insensitive, in bytes)
+            head = content_wo_comments[:1000]
+            if b"xhtml" in head.lower():
                 return "application/xhtml+xml"
             else:
                 return "application/xml"
 
-        if re.match(
-            r"(<script.*?>.*?</script>\s*)?(<!doctype\s+html|<html|<head|<body)",
-            content_str,
-            re.DOTALL,
-        ):
+        # Fast path for HTML: look for doctype/html/head/body tags, case-insensitive
+        if _HTML_LIKE_RE.match(content_wo_comments):
             return "text/html"
 
-        p = re.compile(
-            r"<!doctype\s+(?P<root>[a-zA-Z_:][a-zA-Z0-9_:.-]*)\s+.*>\s*<(?P=root)\b"
-        )
-        if p.search(content_str):
+        # Check for doctype root format for XML
+        if _DOCTYPE_ROOT_RE.search(content_wo_comments):
             return "application/xml"
 
         return None
@@ -457,3 +455,18 @@ class _DocumentConversionInput(BaseModel):
             return None
 
         return None
+
+
+_COMMENT_RE = re.compile(rb"<!--.*?-->", re.DOTALL)
+
+_XML_DECL_RE = re.compile(rb"^\s*<\?xml", re.IGNORECASE)
+
+_HTML_LIKE_RE = re.compile(
+    rb"(?i)(?:<script.*?>.*?</script>\s*)?(<!doctype\s+html|<html|<head|<body)",
+    re.DOTALL,
+)
+
+_DOCTYPE_ROOT_RE = re.compile(
+    rb"<!doctype\s+(?P<root>[a-zA-Z_:][a-zA-Z0-9_:.\-]*)\s+.*?>\s*<(?P=root)\b",
+    re.DOTALL | re.IGNORECASE,
+)
