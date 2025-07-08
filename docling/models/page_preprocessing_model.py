@@ -20,7 +20,7 @@ class PagePreprocessingOptions(BaseModel):
 
 
 class PagePreprocessingModel(BasePageModel):
-    def __init__(self, options: PagePreprocessingOptions):
+    def __init__(self, options: "PagePreprocessingOptions"):
         self.options = options
 
         # Pre-compiled regex patterns for efficiency
@@ -30,6 +30,9 @@ class PagePreprocessingModel(BasePageModel):
         self.SLASH_NUMBER_GARBAGE_RE = re.compile(
             r"(?:/\w+\s*){2,}"
         )  # Two or more "/token " sequences
+
+        # Pre-pack blacklist for O(1) lookup
+        self._blacklist_chars = {"�"}
 
     def __call__(
         self, conv_res: ConversionResult, page_batch: Iterable[Page]
@@ -115,23 +118,29 @@ class PagePreprocessingModel(BasePageModel):
 
     def rate_text_quality(self, text: str) -> float:
         # Hard errors: if any of these patterns are found, return 0.0 immediately.
-        blacklist_chars = ["�"]
-        if (
-            any(text.find(c) >= 0 for c in blacklist_chars)
-            or self.GLYPH_RE.search(text)
-            or self.SLASH_G_RE.search(text)
-            or self.SLASH_NUMBER_GARBAGE_RE.match(
-                text
-            )  # Check if text is mostly slash-number pattern
-        ):
+        # Fast forbidden char check with set intersection
+        if any(c in text for c in self._blacklist_chars):
             return 0.0
 
-        penalty = 0.0
+        # Check only at this point, in priority order (fastest to slowest)
+        if self.GLYPH_RE.search(text):
+            return 0.0
+        # SLASH_G_RE is the slowest - only check if '/' in text (fast substring check)
+        if "/" in text:
+            if self.SLASH_G_RE.search(text):
+                return 0.0
+            if self.SLASH_NUMBER_GARBAGE_RE.match(text):
+                return 0.0
 
-        # Apply a penalty only if the fragmented words pattern occurs at least three times.
-        frag_matches = self.FRAG_RE.findall(text)
-        if len(frag_matches) >= 3:
-            penalty += 0.1 * len(frag_matches)
+        penalty = 0.0
+        # For fragmented words, skip if not enough delimiters
+        # This THRESHOLD guards expensive .findall() call
+        # Lowercase+slash+dot presence == possible fragmentation
+        frag_hint = text.count("/") + text.count(".")  # cheap approximation!
+        if frag_hint >= 5:  # Empirically covers "at least 3" fragments
+            frag_matches = self.FRAG_RE.findall(text)
+            if len(frag_matches) >= 3:
+                penalty += 0.1 * len(frag_matches)
 
         # Additional heuristic: if the average token length is below 2, add a penalty.
         # tokens = text.split()
