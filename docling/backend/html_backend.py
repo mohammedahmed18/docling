@@ -59,21 +59,18 @@ class HTMLDocumentBackend(DeclarativeDocumentBackend):
     def __init__(self, in_doc: "InputDocument", path_or_stream: Union[BytesIO, Path]):
         super().__init__(in_doc, path_or_stream)
         self.soup: Optional[Tag] = None
-        # HTML file:
         self.path_or_stream = path_or_stream
-        # Initialise the parents for the hierarchy
         self.max_levels = 10
         self.level = 0
-        self.parents: dict[int, Optional[Union[DocItem, GroupItem]]] = {}
+        self.parents: dict[int, Optional[Union[DocItem, GroupItem]]] = {
+            i: None for i in range(self.max_levels)
+        }
         self.ctx = _Context()
-        for i in range(self.max_levels):
-            self.parents[i] = None
-
         try:
             if isinstance(self.path_or_stream, BytesIO):
                 text_stream = self.path_or_stream.getvalue()
                 self.soup = BeautifulSoup(text_stream, "html.parser")
-            if isinstance(self.path_or_stream, Path):
+            elif isinstance(self.path_or_stream, Path):
                 with open(self.path_or_stream, "rb") as f:
                     html_content = f.read()
                     self.soup = BeautifulSoup(html_content, "html.parser")
@@ -381,104 +378,109 @@ class HTMLDocumentBackend(DeclarativeDocumentBackend):
 
     @staticmethod
     def parse_table_data(element: Tag) -> Optional[TableData]:  # noqa: C901
-        nested_tables = element.find("table")
-        if nested_tables is not None:
+        # Fastest early exit for nested tables
+        if element.find("table") is not None:
             _log.debug("Skipping nested table.")
             return None
 
-        # Find the number of rows and columns (taking into account spans)
-        num_rows = 0
-        num_cols = 0
-        for row in element("tr"):
-            col_count = 0
-            is_row_header = True
+        # First pass: determine number of rows and columns, taking spans into account
+        num_rows, num_cols = 0, 0
+        tr_find = element.find_all("tr")
+        for row in tr_find:
             if not isinstance(row, Tag):
                 continue
-            for cell in row(["td", "th"]):
-                if not isinstance(row, Tag):
-                    continue
+            col_count = 0
+            is_row_header = True
+            for cell in row.find_all(["td", "th"], recursive=False):
                 cell_tag = cast(Tag, cell)
                 val = cell_tag.get("colspan", "1")
-                colspan = int(val) if (isinstance(val, str) and val.isnumeric()) else 1
+                try:
+                    colspan = int(val)
+                except Exception:
+                    colspan = 1
                 col_count += colspan
-                if cell_tag.name == "td" or cell_tag.get("rowspan") is None:
+                # Do as few lookups as possible
+                name = cell_tag.name
+                if name == "td" or cell_tag.get("rowspan") is None:
                     is_row_header = False
             num_cols = max(num_cols, col_count)
             if not is_row_header:
                 num_rows += 1
 
         _log.debug(f"The table has {num_rows} rows and {num_cols} cols.")
+        if num_rows == 0 or num_cols == 0:
+            return TableData(num_rows=0, num_cols=0, table_cells=[])
 
-        grid: list = [[None for _ in range(num_cols)] for _ in range(num_rows)]
-
+        grid = [[None] * num_cols for _ in range(num_rows)]
         data = TableData(num_rows=num_rows, num_cols=num_cols, table_cells=[])
 
-        # Iterate over the rows in the table
+        # Second pass: fill out TableData and TableCell
         start_row_span = 0
         row_idx = -1
-        for row in element("tr"):
+        for row in tr_find:
             if not isinstance(row, Tag):
                 continue
-
-            # For each row, find all the column cells (both <td> and <th>)
-            cells = row(["td", "th"])
-
-            # Check if cell is in a column header or row header
+            cells = row.find_all(["td", "th"], recursive=False)
             col_header = True
             row_header = True
             for html_cell in cells:
-                if isinstance(html_cell, Tag):
-                    if html_cell.name == "td":
-                        col_header = False
-                        row_header = False
-                    elif html_cell.get("rowspan") is None:
-                        row_header = False
+                if not isinstance(html_cell, Tag):
+                    continue
+                name = html_cell.name
+                if name == "td":
+                    col_header = False
+                    row_header = False
+                elif html_cell.get("rowspan") is None:
+                    row_header = False
             if not row_header:
                 row_idx += 1
-                start_row_span = 0
+                cur_start_row_span = 0
             else:
-                start_row_span += 1
+                cur_start_row_span = start_row_span + 1
+                start_row_span = cur_start_row_span
 
-            # Extract the text content of each cell
             col_idx = 0
             for html_cell in cells:
                 if not isinstance(html_cell, Tag):
                     continue
 
-                # extract inline formulas
-                for formula in html_cell("inline-formula"):
-                    math_parts = formula.text.split("$$")
+                # extract inline formulas - faster in-place split
+                formulas = html_cell.find_all("inline-formula")
+                for formula in formulas:
+                    ftext = formula.get_text()
+                    math_parts = ftext.split("$$")
                     if len(math_parts) == 3:
-                        math_formula = f"$${math_parts[1]}$$"
-                        formula.replace_with(NavigableString(math_formula))
+                        formula.replace_with(NavigableString(f"$${math_parts[1]}$$"))
+                text = html_cell.get_text()
 
-                # TODO: extract content correctly from table-cells with lists
-                text = html_cell.text
-
-                # label = html_cell.name
                 col_val = html_cell.get("colspan", "1")
-                col_span = (
-                    int(col_val)
-                    if isinstance(col_val, str) and col_val.isnumeric()
-                    else 1
-                )
                 row_val = html_cell.get("rowspan", "1")
-                row_span = (
-                    int(row_val)
-                    if isinstance(row_val, str) and row_val.isnumeric()
-                    else 1
-                )
+                try:
+                    col_span = int(col_val)
+                except Exception:
+                    col_span = 1
+                try:
+                    row_span = int(row_val)
+                except Exception:
+                    row_span = 1
+
+                name = html_cell.name
                 if row_header:
                     row_span -= 1
+
                 while (
                     col_idx < num_cols
                     and grid[row_idx + start_row_span][col_idx] is not None
                 ):
                     col_idx += 1
                 for r in range(start_row_span, start_row_span + row_span):
+                    row_pos = row_idx + r
+                    if row_pos >= num_rows:
+                        break
                     for c in range(col_span):
-                        if row_idx + r < num_rows and col_idx + c < num_cols:
-                            grid[row_idx + r][col_idx + c] = text
+                        col_pos = col_idx + c
+                        if col_pos < num_cols:
+                            grid[row_pos][col_pos] = text
 
                 table_cell = TableCell(
                     text=text,
@@ -489,7 +491,7 @@ class HTMLDocumentBackend(DeclarativeDocumentBackend):
                     start_col_offset_idx=col_idx,
                     end_col_offset_idx=col_idx + col_span,
                     column_header=col_header,
-                    row_header=((not col_header) and html_cell.name == "th"),
+                    row_header=((not col_header) and name == "th"),
                 )
                 data.table_cells.append(table_cell)
 
