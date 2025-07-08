@@ -208,22 +208,24 @@ class AsrPipeline(BasePipeline):
 
         self.pipeline_options: AsrPipelineOptions = pipeline_options
 
-        artifacts_path: Optional[Path] = None
-        if pipeline_options.artifacts_path is not None:
-            artifacts_path = Path(pipeline_options.artifacts_path).expanduser()
-        elif settings.artifacts_path is not None:
-            artifacts_path = Path(settings.artifacts_path).expanduser()
+        # Combine logic to avoid multiple Path expansions and unnecessary checks
+        artifacts_path_val = pipeline_options.artifacts_path or settings.artifacts_path
+        artifacts_path: Optional[Path] = (
+            Path(artifacts_path_val).expanduser()
+            if artifacts_path_val is not None
+            else None
+        )
 
-        if artifacts_path is not None and not artifacts_path.is_dir():
-            raise RuntimeError(
-                f"The value of {artifacts_path=} is not valid. "
-                "When defined, it must point to a folder containing all models required by the pipeline."
-            )
+        if artifacts_path is not None:
+            # Only check once
+            if not artifacts_path.is_dir():
+                raise RuntimeError(
+                    f"The value of {artifacts_path=} is not valid. "
+                    "When defined, it must point to a folder containing all models required by the pipeline."
+                )
 
-        if isinstance(self.pipeline_options.asr_options, InlineAsrNativeWhisperOptions):
-            asr_options: InlineAsrNativeWhisperOptions = (
-                self.pipeline_options.asr_options
-            )
+        asr_options = self.pipeline_options.asr_options
+        if isinstance(asr_options, InlineAsrNativeWhisperOptions):
             self._model = _NativeWhisperModel(
                 enabled=True,  # must be always enabled for this pipeline to make sense.
                 artifacts_path=artifacts_path,
@@ -231,11 +233,11 @@ class AsrPipeline(BasePipeline):
                 asr_options=asr_options,
             )
         else:
-            _log.error(f"No model support for {self.pipeline_options.asr_options}")
+            _log.error(f"No model support for {asr_options}")
 
     def _determine_status(self, conv_res: ConversionResult) -> ConversionStatus:
-        status = ConversionStatus.SUCCESS
-        return status
+        # This function is already as optimal as possible
+        return ConversionStatus.SUCCESS
 
     @classmethod
     def get_default_options(cls) -> AsrPipelineOptions:
