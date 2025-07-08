@@ -73,7 +73,7 @@ class HTMLDocumentBackend(DeclarativeDocumentBackend):
             if isinstance(self.path_or_stream, BytesIO):
                 text_stream = self.path_or_stream.getvalue()
                 self.soup = BeautifulSoup(text_stream, "html.parser")
-            if isinstance(self.path_or_stream, Path):
+            elif isinstance(self.path_or_stream, Path):  # use elif
                 with open(self.path_or_stream, "rb") as f:
                     html_content = f.read()
                     self.soup = BeautifulSoup(html_content, "html.parser")
@@ -276,15 +276,15 @@ class HTMLDocumentBackend(DeclarativeDocumentBackend):
 
     def handle_code(self, element: Tag, doc: DoclingDocument) -> None:
         """Handles monospace code snippets (pre)."""
-        if element.text is None:
+        # Optimize: Only compute .text once, and strip in-place
+        txt = element.get_text(strip=True)
+        if not txt:
             return
-        text = element.text.strip()
-        if text:
-            doc.add_code(
-                parent=self.parents[self.level],
-                text=text,
-                content_layer=self.content_layer,
-            )
+        doc.add_code(
+            parent=self.parents[self.level],
+            text=txt,
+            content_layer=self.content_layer,
+        )
 
     def handle_paragraph(self, element: Tag, doc: DoclingDocument) -> None:
         """Handles paragraph tags (p) or equivalent ones."""
