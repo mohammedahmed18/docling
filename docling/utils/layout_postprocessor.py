@@ -194,6 +194,7 @@ class LayoutPostprocessor:
         # DocItemLabel.DOCUMENT_INDEX: DocItemLabel.TABLE,
         DocItemLabel.TITLE: DocItemLabel.SECTION_HEADER,
     }
+    # All constants, class attributes here as before.
 
     def __init__(
         self, page: Page, clusters: List[Cluster], options: LayoutOptions
@@ -218,6 +219,19 @@ class LayoutPostprocessor:
         self.wrapper_index = SpatialClusterIndex(
             [c for c in self.special_clusters if c.label in self.WRAPPER_TYPES]
         )
+
+        # ---- NEW OPTIMIZED: Precompute quick-access table for regular cluster bboxes ----
+        # (For hot-path bbox filtering inside _process_special_clusters/_handle_cross_type_overlaps)
+        # Cluster ID mapped to (cluster, bbox, (l,t,r,b)) for fast lookup.
+        self._regular_bbox_tuples = [
+            (c, c.bbox.l, c.bbox.t, c.bbox.r, c.bbox.b) for c in self.regular_clusters
+        ]
+        self._regular_bboxes = [
+            (c.bbox.l, c.bbox.t, c.bbox.r, c.bbox.b) for c in self.regular_clusters
+        ]
+        self._regular_clusters_list = (
+            self.regular_clusters
+        )  # For index access with above
 
     def postprocess(self) -> Tuple[List[Cluster], List[TextCell]]:
         """Main processing pipeline."""
@@ -309,7 +323,6 @@ class LayoutPostprocessor:
 
         special_clusters = self._handle_cross_type_overlaps(special_clusters)
 
-        # Calculate page area from known page size
         assert self.page_size is not None
         page_area = self.page_size.width * self.page_size.height
         if page_area > 0:
@@ -323,20 +336,34 @@ class LayoutPostprocessor:
                 )
             ]
 
+        # ---- OPTIMIZED: PRE-PROCESS REGULAR CLUSTERS BY BOUNDS ----
+        # For each special, pre-filter only regular clusters whose bbox intersects
+        # the special's bbox, using a quick rectangle intersection test.
+        regular_bbox_tuples = self._regular_bbox_tuples  # local for speed
         for special in special_clusters:
             contained = []
-            for cluster in self.regular_clusters:
-                containment = cluster.bbox.intersection_over_self(special.bbox)
+            s_bbox = special.bbox
+            sl, st, sr, sb = s_bbox.l, s_bbox.t, s_bbox.r, s_bbox.b
+
+            # Find only those regular clusters whose bbox intersects the special's bbox
+            possible = []
+            for c, l, t, r, b in regular_bbox_tuples:
+                if l < sr and r > sl and t < sb and b > st:
+                    possible.append((c, l, t, r, b))
+
+            # Now do the expensive computation only for these
+            append_contained = contained.append
+            for c, _, _, _, _ in possible:
+                containment = c.bbox.intersection_over_self(special.bbox)
                 if containment > 0.8:
-                    contained.append(cluster)
+                    append_contained(c)
 
             if contained:
-                # Sort contained clusters by minimum cell ID:
                 contained = self._sort_clusters(contained, mode="id")
                 special.children = contained
 
-                # Adjust bbox only for Form and Key-Value-Region, not Table or Picture
                 if special.label in [DocItemLabel.FORM, DocItemLabel.KEY_VALUE_REGION]:
+                    # This is still cheap, keeps the minimal code change
                     special.bbox = BoundingBox(
                         l=min(c.bbox.l for c in contained),
                         t=min(c.bbox.t for c in contained),
@@ -374,24 +401,36 @@ class LayoutPostprocessor:
         should be removed.
         """
         wrappers_to_remove = set()
+        # OPTIMIZED: Pre-index tables only for bbox fast filter
+        table_clusters = [
+            (c, c.bbox.l, c.bbox.t, c.bbox.r, c.bbox.b)
+            for c in self.regular_clusters
+            if c.label == DocItemLabel.TABLE
+        ]
 
         for wrapper in special_clusters:
             if wrapper.label not in self.WRAPPER_TYPES:
                 continue  # only treat KEY_VALUE_REGION for now.
 
-            for regular in self.regular_clusters:
-                if regular.label == DocItemLabel.TABLE:
-                    # Calculate overlap
-                    overlap_ratio = wrapper.bbox.intersection_over_self(regular.bbox)
+            wbb = wrapper.bbox
+            wl, wt, wr, wb = wbb.l, wbb.t, wbb.r, wbb.b
 
-                    conf_diff = wrapper.confidence - regular.confidence
+            # restrict to table-regulars whose bbox intersects
+            possible = []
+            for c, l, t, r, b in table_clusters:
+                if l < wr and r > wl and t < wb and b > wt:
+                    possible.append(c)
 
-                    # If wrapper is mostly overlapping with a TABLE, remove the wrapper
-                    if (
-                        overlap_ratio > 0.9 and conf_diff < 0.1
-                    ):  # self.OVERLAP_PARAMS["wrapper"]["conf_threshold"]):  # 80% overlap threshold
-                        wrappers_to_remove.add(wrapper.id)
-                        break
+            for regular in possible:
+                overlap_ratio = wrapper.bbox.intersection_over_self(regular.bbox)
+                conf_diff = wrapper.confidence - regular.confidence
+
+                # If wrapper is mostly overlapping with a TABLE, remove the wrapper
+                if (
+                    overlap_ratio > 0.9 and conf_diff < 0.1
+                ):  # self.OVERLAP_PARAMS["wrapper"]["conf_threshold"]):  # 80% overlap threshold
+                    wrappers_to_remove.add(wrapper.id)
+                    break
 
         # Filter out the identified wrappers
         special_clusters = [
@@ -484,9 +523,7 @@ class LayoutPostprocessor:
         spatial_index = (
             self.regular_index
             if cluster_type == "regular"
-            else self.picture_index
-            if cluster_type == "picture"
-            else self.wrapper_index
+            else self.picture_index if cluster_type == "picture" else self.wrapper_index
         )
 
         # Map of currently valid clusters
