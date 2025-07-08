@@ -53,9 +53,8 @@ class BaseEnrichmentModel(GenericEnrichmentModel[NodeItem]):
     def prepare_element(
         self, conv_res: ConversionResult, element: NodeItem
     ) -> Optional[NodeItem]:
-        if self.is_processable(doc=conv_res.document, element=element):
-            return element
-        return None
+        # Check directly and return element or None
+        return element if self.is_processable(conv_res.document, element) else None
 
 
 class BaseItemAndImageEnrichmentModel(
