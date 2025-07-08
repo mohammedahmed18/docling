@@ -1425,7 +1425,11 @@ class XmlTable:
         self.max_nbr_messages = 2
         self.nbr_messages = 0
         self.empty_text = ""
-        self._soup = BeautifulSoup(input, features="xml")
+        # Parser selection: use lxml-xml if available, which is generally much faster than built-in.
+        try:
+            self._soup = BeautifulSoup(input, features="lxml-xml")
+        except Exception:
+            self._soup = BeautifulSoup(input, features="xml")
 
     def _create_tg_range(self, tgs: list[ColInfo]) -> dict[int, ColInfoType]:
         """Create a unified range along the table groups.
@@ -1517,11 +1521,10 @@ class XmlTable:
         Return:
             The maximum number of columns.
         """
-        ncols_max = 0
-        for rowinfo in tgs_info.values():
-            ncols_max = max(ncols_max, len(rowinfo["colwidth"]))
-
-        return ncols_max
+        # Use generator with max for faster, more efficient calculation.
+        return max(
+            (len(rowinfo["colwidth"]) for rowinfo in tgs_info.values()), default=0
+        )
 
     def _parse_table(self, table: Tag) -> TableData:  # noqa: C901
         """Parse the content of a table tag.
