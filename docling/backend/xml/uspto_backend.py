@@ -68,17 +68,26 @@ class PatentUsptoDocumentBackend(DeclarativeDocumentBackend):
         self.parser: Optional[PatentUspto] = None
 
         try:
+            lines = []
+            # Avoids per-line string concat; lines collected then joined.
             if isinstance(self.path_or_stream, BytesIO):
-                while line := self.path_or_stream.readline().decode("utf-8"):
+                readline = self.path_or_stream.readline
+                decode = bytes.decode
+                while True:
+                    bline = readline()
+                    if not bline:
+                        break
+                    line = decode(bline, "utf-8")
                     if line.startswith("<!DOCTYPE") or line == "PATN\n":
                         self._set_parser(line)
-                    self.patent_content += line
+                    lines.append(line)
             elif isinstance(self.path_or_stream, Path):
                 with open(self.path_or_stream, encoding="utf-8") as file_obj:
-                    while line := file_obj.readline():
+                    for line in file_obj:
                         if line.startswith("<!DOCTYPE") or line == "PATN\n":
                             self._set_parser(line)
-                        self.patent_content += line
+                        lines.append(line)
+            self.patent_content = "".join(lines)
         except Exception as exc:
             raise RuntimeError(
                 f"Could not initialize USPTO backend for file with hash {self.document_hash}."
@@ -122,31 +131,29 @@ class PatentUsptoDocumentBackend(DeclarativeDocumentBackend):
 
     @override
     def convert(self) -> DoclingDocument:
-        if self.parser is not None:
-            doc = self.parser.parse(self.patent_content)
-            if doc is None:
-                raise RuntimeError(
-                    f"Failed to convert doc (hash={self.document_hash}, "
-                    f"name={self.file.name})."
-                )
-            doc.name = self.file.name or "file"
-            mime_type = (
-                "text/plain"
-                if isinstance(self.parser, PatentUsptoGrantAps)
-                else "application/xml"
-            )
-            doc.origin = DocumentOrigin(
-                mimetype=mime_type,
-                binary_hash=self.document_hash,
-                filename=self.file.name or "file",
-            )
-
-            return doc
-        else:
+        if self.parser is None:
             raise RuntimeError(
                 f"Cannot convert doc (hash={self.document_hash}, "
                 f"name={self.file.name}) because the backend failed to init."
             )
+        doc = self.parser.parse(self.patent_content)
+        if doc is None:
+            raise RuntimeError(
+                f"Failed to convert doc (hash={self.document_hash}, "
+                f"name={self.file.name})."
+            )
+        doc.name = self.file.name or "file"
+        mime_type = (
+            "text/plain"
+            if isinstance(self.parser, PatentUsptoGrantAps)
+            else "application/xml"
+        )
+        doc.origin = DocumentOrigin(
+            mimetype=mime_type,
+            binary_hash=self.document_hash,
+            filename=self.file.name or "file",
+        )
+        return doc
 
 
 class PatentUspto(ABC):
@@ -511,6 +518,7 @@ class PatentUsptoGrantV2(PatentUspto):
     def __init__(self) -> None:
         """Build an instance of PatentUsptoGrantV2 class."""
         self.handler = PatentUsptoGrantV2.PatentHandler()
+        # Compile pattern ONCE and use.
         self.pattern = re.compile(r"^(<table .*?</table>)", re.MULTILINE | re.DOTALL)
 
     @override
@@ -519,31 +527,34 @@ class PatentUsptoGrantV2(PatentUspto):
             xml.sax.parseString(patent_content, self.handler)
         except xml.sax._exceptions.SAXParseException as exc_sax:
             _log.error(f"Error in parsing USPTO document: {exc_sax}")
-
             return None
 
         doc = self.handler.doc
-        if doc:
-            raw_tables = re.findall(self.pattern, patent_content)
-            parsed_tables: list[TableData] = []
-            _log.debug(f"Found {len(raw_tables)} tables to be parsed with XmlTable.")
-            for table in raw_tables:
-                table_parser = XmlTable(XML_DECLARATION + "\n" + table)
-                try:
-                    table_data = table_parser.parse()
-                    if table_data:
-                        parsed_tables.append(table_data)
-                except Exception as exc_table:
-                    _log.error(f"Error in parsing USPTO tables: {exc_table}")
-            if len(parsed_tables) != len(doc.tables):
-                _log.error(
-                    f"Number of referenced ({len(doc.tables)}) and parsed "
-                    f"({len(parsed_tables)}) tables differ."
-                )
-            else:
-                for idx, item in enumerate(parsed_tables):
-                    doc.tables[idx].data = item
+        if not doc:
+            return doc  # None, as before
 
+        raw_tables = self.pattern.findall(patent_content)
+        parsed_tables = []
+        _log.debug(f"Found {len(raw_tables)} tables to be parsed with XmlTable.")
+        # Pre-create all XmlTable instances, parse in tightest loop
+        prepend_decl = XML_DECLARATION + "\n"
+        for table in raw_tables:
+            table_parser = XmlTable(prepend_decl + table)
+            try:
+                table_data = table_parser.parse()
+                if table_data:
+                    parsed_tables.append(table_data)
+            except Exception as exc_table:
+                _log.error(f"Error in parsing USPTO tables: {exc_table}")
+        if len(parsed_tables) != len(doc.tables):
+            _log.error(
+                f"Number of referenced ({len(doc.tables)}) and parsed "
+                f"({len(parsed_tables)}) tables differ."
+            )
+        else:
+            # Efficiently assign pre-parsed tables
+            for idx, item in enumerate(parsed_tables):
+                doc.tables[idx].data = item
         return doc
 
     class PatentHandler(xml.sax.handler.ContentHandler):
