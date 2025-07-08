@@ -22,9 +22,13 @@ class UnionFind:
         self.rank = dict.fromkeys(elements, 0)
 
     def find(self, x):
-        if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])  # Path compression
-        return self.parent[x]
+        parent = self.parent  # Local cache for speedup
+        px = parent[x]
+        if px != x:
+            root = self.find(px)
+            parent[x] = root  # Path compression
+            return root
+        return px
 
     def union(self, x, y):
         root_x, root_y = self.find(x), self.find(y)
@@ -484,9 +488,7 @@ class LayoutPostprocessor:
         spatial_index = (
             self.regular_index
             if cluster_type == "regular"
-            else self.picture_index
-            if cluster_type == "picture"
-            else self.wrapper_index
+            else self.picture_index if cluster_type == "picture" else self.wrapper_index
         )
 
         # Map of currently valid clusters
