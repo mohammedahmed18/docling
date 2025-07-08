@@ -2,6 +2,7 @@ import bisect
 import logging
 import sys
 from collections import defaultdict
+from operator import attrgetter
 from typing import Dict, List, Set, Tuple
 
 from docling_core.types.doc import DocItemLabel, Size
@@ -205,19 +206,31 @@ class LayoutPostprocessor:
         self.page_size = page.size
         self.all_clusters = clusters
         self.options = options
-        self.regular_clusters = [
-            c for c in clusters if c.label not in self.SPECIAL_TYPES
-        ]
-        self.special_clusters = [c for c in clusters if c.label in self.SPECIAL_TYPES]
 
-        # Build spatial indices once
+        # Cache SPECIAL_TYPES and WRAPPER_TYPES at instance level for fast membership checks.
+        self.SPECIAL_TYPES = type(self).SPECIAL_TYPES
+        self.WRAPPER_TYPES = type(self).WRAPPER_TYPES
+
+        # Partition clusters in one pass for efficiency.
+        self.regular_clusters = []
+        self.special_clusters = []
+        special_picture_clusters = []
+        special_wrapper_clusters = []
+
+        for c in clusters:
+            if c.label in self.SPECIAL_TYPES:
+                self.special_clusters.append(c)
+                if c.label == DocItemLabel.PICTURE:
+                    special_picture_clusters.append(c)
+                if c.label in self.WRAPPER_TYPES:
+                    special_wrapper_clusters.append(c)
+            else:
+                self.regular_clusters.append(c)
+
+        # Build spatial indices once using the previously built lists
         self.regular_index = SpatialClusterIndex(self.regular_clusters)
-        self.picture_index = SpatialClusterIndex(
-            [c for c in self.special_clusters if c.label == DocItemLabel.PICTURE]
-        )
-        self.wrapper_index = SpatialClusterIndex(
-            [c for c in self.special_clusters if c.label in self.WRAPPER_TYPES]
-        )
+        self.picture_index = SpatialClusterIndex(special_picture_clusters)
+        self.wrapper_index = SpatialClusterIndex(special_wrapper_clusters)
 
     def postprocess(self) -> Tuple[List[Cluster], List[TextCell]]:
         """Main processing pipeline."""
@@ -484,9 +497,7 @@ class LayoutPostprocessor:
         spatial_index = (
             self.regular_index
             if cluster_type == "regular"
-            else self.picture_index
-            if cluster_type == "picture"
-            else self.wrapper_index
+            else self.picture_index if cluster_type == "picture" else self.wrapper_index
         )
 
         # Map of currently valid clusters
@@ -639,7 +650,7 @@ class LayoutPostprocessor:
 
     def _sort_cells(self, cells: List[TextCell]) -> List[TextCell]:
         """Sort cells in native reading order."""
-        return sorted(cells, key=lambda c: (c.index))
+        return sorted(cells, key=attrgetter("index"))
 
     def _sort_clusters(
         self, clusters: List[Cluster], mode: str = "id"
