@@ -53,17 +53,24 @@ class PdfDocumentBackend(PaginatedDocumentBackend):
     def __init__(self, in_doc: InputDocument, path_or_stream: Union[BytesIO, Path]):
         super().__init__(in_doc, path_or_stream)
 
-        if self.input_format is not InputFormat.PDF:
-            if self.input_format is InputFormat.IMAGE:
+        # Fast path: if already PDF, nothing to do
+        if self.input_format is InputFormat.PDF:
+            return
+
+        # If input is image, convert to PDF using PIL (without unnecessary object creation)
+        if self.input_format is InputFormat.IMAGE:
+            # Open the image directly; no intermediate objects
+            with Image.open(self.path_or_stream) as img:
                 buf = BytesIO()
-                img = Image.open(self.path_or_stream)
                 img.save(buf, "PDF")
                 buf.seek(0)
                 self.path_or_stream = buf
-            else:
-                raise RuntimeError(
-                    f"Incompatible file format {self.input_format} was passed to a PdfDocumentBackend."
-                )
+            return
+
+        # Only if format is not PDF and not IMAGE, raise error
+        raise RuntimeError(
+            f"Incompatible file format {self.input_format} was passed to a PdfDocumentBackend."
+        )
 
     @abstractmethod
     def load_page(self, page_no: int) -> PdfPageBackend:
