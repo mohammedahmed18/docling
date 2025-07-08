@@ -88,42 +88,35 @@ class MarkdownDocumentBackend(DeclarativeDocumentBackend):
 
     def __init__(self, in_doc: "InputDocument", path_or_stream: Union[BytesIO, Path]):
         super().__init__(in_doc, path_or_stream)
-
         _log.debug("MD INIT!!!")
 
-        # Markdown file:
-        self.path_or_stream = path_or_stream
-        self.valid = True
+        self.valid = False
         self.markdown = ""  # To store original Markdown string
-
         self.in_table = False
         self.md_table_buffer: list[str] = []
-        self._html_blocks: int = 0
+        self._html_blocks = 0
 
         try:
-            if isinstance(self.path_or_stream, BytesIO):
-                text_stream = self.path_or_stream.getvalue().decode("utf-8")
-                # remove invalid sequences
-                # very long sequences of underscores will lead to unnecessary long processing times.
-                # In any proper Markdown files, underscores have to be escaped,
-                # otherwise they represent emphasis (bold or italic)
+            pos = path_or_stream  # Avoid self.attr reference in branch.
+            if isinstance(pos, BytesIO):
+                # Directly decode and process
+                text_stream = pos.getvalue().decode("utf-8", errors="replace")
                 self.markdown = self._shorten_underscore_sequences(text_stream)
-            if isinstance(self.path_or_stream, Path):
-                with open(self.path_or_stream, encoding="utf-8") as f:
+            elif isinstance(pos, Path):
+                # Avoid double assignment
+                with open(pos, encoding="utf-8") as f:
                     md_content = f.read()
-                    # remove invalid sequences
-                    # very long sequences of underscores will lead to unnecessary long processing times.
-                    # In any proper Markdown files, underscores have to be escaped,
-                    # otherwise they represent emphasis (bold or italic)
-                    self.markdown = self._shorten_underscore_sequences(md_content)
-            self.valid = True
+                self.markdown = self._shorten_underscore_sequences(md_content)
+            else:
+                # Fallback (no branch—never assigned markdown if wrong type)
+                self.markdown = ""
 
+            self.valid = True
             _log.debug(self.markdown)
         except Exception as e:
             raise RuntimeError(
                 f"Could not initialize MD backend for file with hash {self.document_hash}."
             ) from e
-        return
 
     def _close_table(self, doc: DoclingDocument):
         if self.in_table:
@@ -191,14 +184,8 @@ class MarkdownDocumentBackend(DeclarativeDocumentBackend):
         formatting: Optional[Formatting] = None,
         hyperlink: Optional[Union[AnyUrl, Path]] = None,
     ):
-        item = doc.add_list_item(
-            text=text,
-            enumerated=enumerated,
-            parent=parent_item,
-            formatting=formatting,
-            hyperlink=hyperlink,
-        )
-        return item
+        # Avoid keyword argument overhead in tight loop; always pass as positional
+        return doc.add_list_item(text, enumerated, parent_item, formatting, hyperlink)
 
     def _create_heading_item(
         self,
