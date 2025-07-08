@@ -99,42 +99,58 @@ class DoclingParseV2PageBackend(PdfPageBackend):
     def get_text_in_rect(self, bbox: BoundingBox) -> str:
         if not self.valid:
             return ""
-        # Find intersecting cells on the page
-        text_piece = ""
-        page_size = self.get_size()
 
-        parser_width = self._dpage["sanitized"]["dimension"]["width"]
-        parser_height = self._dpage["sanitized"]["dimension"]["height"]
+        # Get page size once (avoid repeated locking)
+        with pypdfium2_lock:
+            page_width = self._ppage.get_width()
+            page_height = self._ppage.get_height()
+        page_size_width = page_width
+        page_size_height = page_height
+
+        parser_dims = self._dpage["sanitized"]["dimension"]
+        parser_width = parser_dims["width"]
+        parser_height = parser_dims["height"]
 
         scale = (
             1  # FIX - Replace with param in get_text_in_rect across backends (optional)
         )
 
-        cells_data = self._dpage["sanitized"]["cells"]["data"]
-        cells_header = self._dpage["sanitized"]["cells"]["header"]
+        # Header index caching for much faster access
+        cells = self._dpage["sanitized"]["cells"]
+        cells_data = cells["data"]
+        cells_header = cells["header"]
+        idx_x0 = cells_header.index("x0")
+        idx_y0 = cells_header.index("y0")
+        idx_x1 = cells_header.index("x1")
+        idx_y1 = cells_header.index("y1")
+        idx_text = cells_header.index("text")
 
-        for i, cell_data in enumerate(cells_data):
-            x0 = cell_data[cells_header.index("x0")]
-            y0 = cell_data[cells_header.index("y0")]
-            x1 = cell_data[cells_header.index("x1")]
-            y1 = cell_data[cells_header.index("y1")]
+        text_pieces = []
+        # Minimize attribute and function access/calc in the loop
+        scale_w = scale * page_size_width / parser_width
+        scale_h = scale * page_size_height / parser_height
+        tl_page_height = page_size_height * scale
+
+        for cell_data in cells_data:
+            x0 = cell_data[idx_x0]
+            y0 = cell_data[idx_y0]
+            x1 = cell_data[idx_x1]
+            y1 = cell_data[idx_y1]
 
             cell_bbox = BoundingBox(
-                l=x0 * scale * page_size.width / parser_width,
-                b=y0 * scale * page_size.height / parser_height,
-                r=x1 * scale * page_size.width / parser_width,
-                t=y1 * scale * page_size.height / parser_height,
+                l=x0 * scale_w,
+                b=y0 * scale_h,
+                r=x1 * scale_w,
+                t=y1 * scale_h,
                 coord_origin=CoordOrigin.BOTTOMLEFT,
-            ).to_top_left_origin(page_height=page_size.height * scale)
+            ).to_top_left_origin(page_height=tl_page_height)
 
             overlap_frac = cell_bbox.intersection_over_self(bbox)
 
             if overlap_frac > 0.5:
-                if len(text_piece) > 0:
-                    text_piece += " "
-                text_piece += cell_data[cells_header.index("text")]
+                text_pieces.append(cell_data[idx_text])
 
-        return text_piece
+        return " ".join(text_pieces)
 
     def get_segmented_page(self) -> Optional[SegmentedPdfPage]:
         if not self.valid:
