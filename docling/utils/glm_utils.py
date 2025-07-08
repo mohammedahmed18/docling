@@ -59,7 +59,7 @@ def _flatten_table_grid(grid: List[List[dict]]) -> List[dict]:
     for sublist in grid:
         for obj in sublist:
             # Convert the spans list to a tuple of tuples for hashing
-            spans_tuple = tuple(tuple(span) for span in obj["spans"])
+            spans_tuple = tuple(map(tuple, obj["spans"]))
             if spans_tuple not in seen_spans:
                 seen_spans.add(spans_tuple)
                 unique_objects.append(obj)
@@ -67,7 +67,9 @@ def _flatten_table_grid(grid: List[List[dict]]) -> List[dict]:
     return unique_objects
 
 
-def to_docling_document(doc_glm, update_name_label=False) -> DoclingDocument:  # noqa: C901
+def to_docling_document(
+    doc_glm, update_name_label=False
+) -> DoclingDocument:  # noqa: C901
     origin = DocumentOrigin(
         mimetype="application/pdf",
         filename=doc_glm["file-info"]["filename"],
