@@ -7,11 +7,9 @@ from typing import Final, Optional, Union, cast
 from bs4 import BeautifulSoup, NavigableString, PageElement, Tag
 from bs4.element import PreformattedString
 from docling_core.types.doc import (
-    DocItem,
     DocItemLabel,
     DoclingDocument,
     DocumentOrigin,
-    GroupItem,
     GroupLabel,
     TableCell,
     TableData,
@@ -59,28 +57,25 @@ class HTMLDocumentBackend(DeclarativeDocumentBackend):
     def __init__(self, in_doc: "InputDocument", path_or_stream: Union[BytesIO, Path]):
         super().__init__(in_doc, path_or_stream)
         self.soup: Optional[Tag] = None
-        # HTML file:
-        self.path_or_stream = path_or_stream
-        # Initialise the parents for the hierarchy
         self.max_levels = 10
         self.level = 0
-        self.parents: dict[int, Optional[Union[DocItem, GroupItem]]] = {}
+        # Use list for parents since keyspace is dense and fixed-size
+        self.parents = [None] * self.max_levels
         self.ctx = _Context()
-        for i in range(self.max_levels):
-            self.parents[i] = None
 
+        html_content = None
         try:
-            if isinstance(self.path_or_stream, BytesIO):
-                text_stream = self.path_or_stream.getvalue()
-                self.soup = BeautifulSoup(text_stream, "html.parser")
-            if isinstance(self.path_or_stream, Path):
-                with open(self.path_or_stream, "rb") as f:
+            if isinstance(path_or_stream, BytesIO):
+                html_content = path_or_stream.getvalue()
+            elif isinstance(path_or_stream, Path):
+                # Use optimized I/O with context manager, single read
+                with open(path_or_stream, "rb") as f:
                     html_content = f.read()
-                    self.soup = BeautifulSoup(html_content, "html.parser")
+            if html_content is not None:
+                self.soup = BeautifulSoup(html_content, "html.parser")
         except Exception as e:
             raise RuntimeError(
-                "Could not initialize HTML backend for file with "
-                f"hash {self.document_hash}."
+                f"Could not initialize HTML backend for file with hash {self.document_hash}."
             ) from e
 
     @override
@@ -288,16 +283,17 @@ class HTMLDocumentBackend(DeclarativeDocumentBackend):
 
     def handle_paragraph(self, element: Tag, doc: DoclingDocument) -> None:
         """Handles paragraph tags (p) or equivalent ones."""
-        if element.text is None:
-            return
-        text = element.text.strip()
+        # Strip and check text in one go for speed
+        text = element.text
         if text:
-            doc.add_text(
-                parent=self.parents[self.level],
-                label=DocItemLabel.TEXT,
-                text=text,
-                content_layer=self.content_layer,
-            )
+            text_stripped = text.strip()
+            if text_stripped:
+                doc.add_text(
+                    parent=self.parents[self.level],
+                    label=DocItemLabel.TEXT,
+                    text=text_stripped,
+                    content_layer=self.content_layer,
+                )
 
     def handle_list(self, element: Tag, doc: DoclingDocument) -> None:
         """Handles list tags (ul, ol) and their list items."""
