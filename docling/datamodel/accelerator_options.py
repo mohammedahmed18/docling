@@ -31,9 +31,7 @@ class AcceleratorOptions(BaseSettings):
     @field_validator("device")
     def validate_device(cls, value):
         # "auto", "cpu", "cuda", "mps", or "cuda:N"
-        if value in {d.value for d in AcceleratorDevice} or re.match(
-            r"^cuda(:\d+)?$", value
-        ):
+        if value in _VALID_DEVICE_VALUES or _CUDA_REGEX.match(value):
             return value
         raise ValueError(
             "Invalid device option. Use 'auto', 'cpu', 'mps', 'cuda', or 'cuda:N'."
@@ -66,3 +64,8 @@ class AcceleratorOptions(BaseSettings):
                             omp_num_threads,
                         )
         return data
+
+
+_VALID_DEVICE_VALUES = {d.value for d in AcceleratorDevice}
+
+_CUDA_REGEX = re.compile(r"^cuda(:\d+)?$")
