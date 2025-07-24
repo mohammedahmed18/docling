@@ -31,17 +31,37 @@ class BaseFactory(Generic[A], metaclass=ABCMeta):
         self._classes: dict[Type[BaseOptions], Type[A]] = {}
         self._meta: dict[Type[BaseOptions], FactoryMeta] = {}
 
+        # Optional: precompute enum name, helps if called often
+        self._enum_name = f"{self.plugin_attr_name}_enum"
+
     @property
     def registered_kind(self) -> list[str]:
         return [opt.kind for opt in self._classes.keys()]
 
     def get_enum(self) -> enum.Enum:
-        return enum.Enum(
-            self.plugin_attr_name + "_enum",
-            names={kind: kind for kind in self.registered_kind},
+        # Cache enum based on the unique combination of enum name and registered kinds
+        kinds = tuple(self.registered_kind)  # Converted once, avoids recomputation
+        cache_key = (self._enum_name, kinds)
+
+        result = _enum_cache.get(cache_key)
+        if result is not None:
+            return result
+
+        # Efficient dict construction with dict.fromkeys; values same as keys
+        names = dict.fromkeys(kinds)
+        # enum.Enum expects a dict with values, not None:
+        for k in names:
+            names[k] = k
+
+        result = enum.Enum(
+            self._enum_name,
+            names=names,
             type=str,
             module=__name__,
         )
+        _enum_cache[cache_key] = result
+
+        return result
 
     @property
     def classes(self):
@@ -120,3 +140,6 @@ class BaseFactory(Generic[A], metaclass=ABCMeta):
                 self.register(item, plugin_name, plugin_module_name)
             except ValueError:
                 logger.warning("%r already registered", item)
+
+
+_enum_cache = {}
