@@ -112,6 +112,13 @@ class PyPdfiumPageBackend(PdfPageBackend):
                 exc_info=True,
             )
             self.valid = False
+            self._size: Optional[Size] = None
+        else:
+            # Pre-fetch size with lock for consistency and thread safety
+            with pypdfium2_lock:
+                width = self._ppage.get_width()
+                height = self._ppage.get_height()
+            self._size: Size = Size(width=width, height=height)
         self.text_page: Optional[PdfTextPage] = None
 
     def is_valid(self) -> bool:
@@ -339,8 +346,8 @@ class PyPdfiumPageBackend(PdfPageBackend):
         return image
 
     def get_size(self) -> Size:
-        with pypdfium2_lock:
-            return Size(width=self._ppage.get_width(), height=self._ppage.get_height())
+        # The size is cached during __init__, just return it.
+        return self._size
 
     def unload(self):
         self._ppage = None
