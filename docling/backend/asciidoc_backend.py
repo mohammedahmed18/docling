@@ -30,17 +30,19 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     def __init__(self, in_doc: InputDocument, path_or_stream: Union[BytesIO, Path]):
         super().__init__(in_doc, path_or_stream)
 
-        self.path_or_stream = path_or_stream
-
         try:
             if isinstance(self.path_or_stream, BytesIO):
-                text_stream = self.path_or_stream.getvalue().decode("utf-8")
-                self.lines = text_stream.split("\n")
-            if isinstance(self.path_or_stream, Path):
+                # Read and decode in one step, splitlines for consistency and memory efficiency
+                self.lines = self.path_or_stream.getvalue().decode("utf-8").splitlines()
+            elif isinstance(self.path_or_stream, Path):  # use elif for exclusive check
+                # Use with to open and read all lines without trailing newlines
                 with open(self.path_or_stream, encoding="utf-8") as f:
-                    self.lines = f.readlines()
+                    self.lines = [line.rstrip("\n\r") for line in f]
+            else:
+                raise TypeError(
+                    f"Unsupported path_or_stream type: {type(self.path_or_stream)}"
+                )
             self.valid = True
-
         except Exception as e:
             raise RuntimeError(
                 f"Could not initialize AsciiDoc backend for file with hash {self.document_hash}."
@@ -297,7 +299,8 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     #   =========   Section headers
     @staticmethod
     def _is_section_header(line):
-        return re.match(r"^==+\s+", line)
+        # Use precompiled regex
+        return _SECTION_HEADER_RE.match(line)
 
     @staticmethod
     def _parse_section_header(line):
@@ -441,3 +444,6 @@ class AsciiDocBackend(DeclarativeDocumentBackend):
     @staticmethod
     def _parse_text(line):
         return {"type": "text", "text": line.strip()}
+
+
+_SECTION_HEADER_RE = re.compile(r"^==+\s+")
