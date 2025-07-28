@@ -1,19 +1,22 @@
 def ocr_engines():
-    from docling.models.easyocr_model import EasyOcrModel
-    from docling.models.ocr_mac_model import OcrMacModel
-    from docling.models.rapid_ocr_model import RapidOcrModel
-    from docling.models.tesseract_ocr_cli_model import TesseractOcrCliModel
-    from docling.models.tesseract_ocr_model import TesseractOcrModel
+    # Cache the engines after the first import, so subsequent calls are fast
+    if not hasattr(ocr_engines, "_cached"):
+        from docling.models.easyocr_model import EasyOcrModel
+        from docling.models.ocr_mac_model import OcrMacModel
+        from docling.models.rapid_ocr_model import RapidOcrModel
+        from docling.models.tesseract_ocr_cli_model import TesseractOcrCliModel
+        from docling.models.tesseract_ocr_model import TesseractOcrModel
 
-    return {
-        "ocr_engines": [
-            EasyOcrModel,
-            OcrMacModel,
-            RapidOcrModel,
-            TesseractOcrModel,
-            TesseractOcrCliModel,
-        ]
-    }
+        ocr_engines._cached = {
+            "ocr_engines": [
+                EasyOcrModel,
+                OcrMacModel,
+                RapidOcrModel,
+                TesseractOcrModel,
+                TesseractOcrCliModel,
+            ]
+        }
+    return ocr_engines._cached
 
 
 def picture_description():
