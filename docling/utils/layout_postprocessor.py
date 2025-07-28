@@ -484,9 +484,7 @@ class LayoutPostprocessor:
         spatial_index = (
             self.regular_index
             if cluster_type == "regular"
-            else self.picture_index
-            if cluster_type == "picture"
-            else self.wrapper_index
+            else self.picture_index if cluster_type == "picture" else self.wrapper_index
         )
 
         # Map of currently valid clusters
@@ -604,12 +602,47 @@ class LayoutPostprocessor:
 
     def _find_unassigned_cells(self, clusters: List[Cluster]) -> List[TextCell]:
         """Find cells not assigned to any cluster."""
-        assigned = {cell.index for cluster in clusters for cell in cluster.cells}
-        return [
-            cell
-            for cell in self.cells
-            if cell.index not in assigned and cell.text.strip()
-        ]
+        # Optimization: Use a fast boolean index lookup for cell indices instead of set membership,
+        # and minimize .strip() calls. Assumes cell.index is small integer and cells are dense.
+
+        cells = self.cells
+        # Fast path for empty clusters
+        if not clusters:
+            return [cell for cell in cells if cell.text.strip()]
+
+        max_index = -1
+        indices = []
+        for cluster in clusters:
+            for cell in cluster.cells:
+                idx = cell.index
+                indices.append(idx)
+                if idx > max_index:
+                    max_index = idx
+
+        if max_index < 0:
+            # No assigned indices in clusters, all cells count
+            return [cell for cell in cells if cell.text.strip()]
+
+        # Build boolean bitmap
+        assigned_bitmap = [False] * (max_index + 1)
+        for idx in indices:
+            assigned_bitmap[idx] = True
+
+        # Only consider cells with index in [0, max_index]. For indices outside, keep using `not in assigned`.
+        get = assigned_bitmap.__getitem__
+        unassigned = []
+        for cell in cells:
+            idx = cell.index
+            # If idx in assigned range, use bitmap. If not, check set.
+            if (
+                (0 <= idx <= max_index and not get(idx))
+                or (idx < 0 or idx > max_index)
+                and idx not in indices
+            ):
+                # Only call .strip if cell is unassigned
+                if cell.text.strip():
+                    unassigned.append(cell)
+        return unassigned
 
     def _adjust_cluster_bboxes(self, clusters: List[Cluster]) -> List[Cluster]:
         """Adjust cluster bounding boxes to contain their cells."""
