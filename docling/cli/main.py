@@ -272,7 +272,8 @@ def export_documents(
 def _split_list(raw: Optional[str]) -> Optional[List[str]]:
     if raw is None:
         return None
-    return re.split(r"[;,]", raw)
+    # Split much faster using str.replace + str.split
+    return raw.replace(";", ",").split(",")
 
 
 @app.command(no_args_is_help=True)
