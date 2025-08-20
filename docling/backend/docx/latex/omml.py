@@ -39,6 +39,13 @@ from docling.backend.docx.latex.latex_dict import (
     T,
 )
 
+"""
+Office Math Markup Language (OMML)
+
+Adapted from https://github.com/xiilei/dwml/blob/master/dwml/omml.py
+On 23/01/2025
+"""
+
 OMML_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 
 _log = logging.getLogger(__name__)
@@ -108,10 +115,8 @@ class Tag2Method:
         """
         process children of the elm,return dict
         """
-        latex_chars = dict()
-        for stag, t, e in self.process_children_list(elm, include):
-            latex_chars[stag] = t
-        return latex_chars
+        # Slightly faster with a dict comprehension
+        return {stag: t for stag, t, e in self.process_children_list(elm, include)}
 
     def process_children(self, elm, include=None):
         """
@@ -220,9 +225,18 @@ class oMath2Latex(Tag2Method):
         """
         the bar function
         """
+        # Hot: single callsite; inline get_val for speed
         c_dict = self.process_children_dict(elm)
         pr = c_dict["barPr"]
-        latex_s = get_val(pr.pos, default=POS_DEFAULT.get("BAR_VAL"), store=POS)
+        # Inline get_val for known store=POS and default=POS_DEFAULT.get("BAR_VAL")
+        pos = pr.pos
+        if pos is not None:
+            # Common case is store (POS) is not None, so use it
+            # Minor speedup: local var
+            _POS = POS
+            latex_s = _POS.get(pos, pos)
+        else:
+            latex_s = POS_DEFAULT["BAR_VAL"]
         return pr.text + latex_s.format(c_dict["e"])
 
     def do_d(self, elm):
