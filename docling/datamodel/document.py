@@ -137,9 +137,9 @@ class InputDocument(BaseModel):
                     self._init_doc(backend, path_or_stream)
 
             elif isinstance(path_or_stream, BytesIO):
-                assert filename is not None, (
-                    "Can't construct InputDocument from stream without providing filename arg."
-                )
+                assert (
+                    filename is not None
+                ), "Can't construct InputDocument from stream without providing filename arg."
                 self.file = PurePath(filename)
                 self.filesize = path_or_stream.getbuffer().nbytes
 
@@ -228,7 +228,10 @@ class _DummyBackend(AbstractDocumentBackend):
         return False
 
     def unload(self):
-        return super().unload()
+        # Only call parent's unload if path_or_stream is BytesIO for efficiency
+        if isinstance(self.path_or_stream, BytesIO):
+            self.path_or_stream.close()
+        self.path_or_stream = None
 
 
 class _DocumentConversionInput(BaseModel):
