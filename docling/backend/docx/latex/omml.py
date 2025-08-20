@@ -117,12 +117,17 @@ class Tag2Method:
         """
         process children of the elm,return string
         """
-        return BLANK.join(
-            (
-                t if not isinstance(t, Tag2Method) else str(t)
-                for stag, t, e in self.process_children_list(elm, include)
-            )
-        )
+        # Use a list comprehension to gather results, then join once.
+        # Locals for performance.
+        join = BLANK.join
+        str_ = str
+        result = []
+        for stag, t, e in self.process_children_list(elm, include):
+            # Avoid isinstance except if necessary for your code logic.
+            if type(t) is Tag2Method:
+                t = str_(t)
+            result.append(t)
+        return join(result)
 
     def process_unknow(self, elm, stag):
         return None
@@ -186,6 +191,7 @@ class oMath2Latex(Tag2Method):
     )
 
     def __init__(self, element):
+        # Use direct member reference for performance.
         self._latex = self.process_children(element)
 
     def __str__(self):
@@ -252,8 +258,11 @@ class oMath2Latex(Tag2Method):
         return SUB.format(text)
 
     def do_sup(self, elm):
-        text = self.process_children(elm)
-        return SUP.format(text)
+        # Reduce attribute lookups inside hot method.
+        process_children = self.process_children
+        sup_format = SUP.format
+        text = process_children(elm)
+        return sup_format(text)
 
     def do_f(self, elm):
         """
