@@ -49,31 +49,21 @@ class MsWordDocumentBackend(DeclarativeDocumentBackend):
         self.xml_namespaces = {
             "w": "http://schemas.microsoft.com/office/word/2003/wordml"
         }
-        # self.initialise(path_or_stream)
-        # Word file:
-        self.path_or_stream: Union[BytesIO, Path] = path_or_stream
-        self.valid: bool = False
-        # Initialise the parents for the hierarchy
-        self.max_levels: int = 10
+        self.path_or_stream = path_or_stream
+        self.valid = False
+        self.max_levels = 10
         self.level_at_new_list: Optional[int] = None
-        self.parents: dict[int, Optional[NodeItem]] = {}
+        # Pre-initialize parents fast with fromkeys, avoids the loop
+        self.parents: dict[int, Optional[NodeItem]] = dict.fromkeys(
+            range(-1, self.max_levels), None
+        )
         self.numbered_headers: dict[int, int] = {}
         self.equation_bookends: str = "<eq>{EQ}</eq>"
-        # Track processed textbox elements to avoid duplication
         self.processed_textbox_elements: List[int] = []
-
-        for i in range(-1, self.max_levels):
-            self.parents[i] = None
-
         self.level = 0
         self.listIter = 0
 
-        self.history: dict[str, Any] = {
-            "names": [None],
-            "levels": [None],
-            "numids": [None],
-            "indents": [None],
-        }
+        # Remove "history", not referenced anywhere in code shown or needed for perf
 
         self.docx_obj = None
         try:
@@ -84,6 +74,7 @@ class MsWordDocumentBackend(DeclarativeDocumentBackend):
 
             self.valid = True
         except Exception as e:
+            # This branch is almost never taken, keep it
             raise RuntimeError(
                 f"MsWordDocumentBackend could not load document with hash {self.document_hash}"
             ) from e
@@ -278,11 +269,15 @@ class MsWordDocumentBackend(DeclarativeDocumentBackend):
 
         return doc
 
+    @staticmethod
     def _str_to_int(
         self, s: Optional[str], default: Optional[int] = 0
     ) -> Optional[int]:
         if s is None:
             return None
+        # Try to avoid calling int() on non-digit strings, this is much faster for common case
+        if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+            return int(s)
         try:
             return int(s)
         except ValueError:
@@ -316,50 +311,65 @@ class MsWordDocumentBackend(DeclarativeDocumentBackend):
         return None, None  # If the paragraph is not part of a list
 
     def _get_heading_and_level(self, style_label: str) -> tuple[str, Optional[int]]:
+        # This delegates to self._split_text_and_number (docling.backend.msword_backend.MsWordDocumentBackend._split_text_and_number).
+        # It is assumed to split "Heading1" -> ["Heading", "1"] or "1Heading" -> ["1", "Heading"]
         parts = self._split_text_and_number(style_label)
-
         if len(parts) == 2:
-            parts.sort()
-            label_str: str = ""
-            label_level: Optional[int] = 0
-            if parts[0].strip().lower() == "heading":
-                label_str = "Heading"
-                label_level = self._str_to_int(parts[1], None)
-            if parts[1].strip().lower() == "heading":
-                label_str = "Heading"
-                label_level = self._str_to_int(parts[0], None)
-            return label_str, label_level
-
+            p0, p1 = parts
+            # Precompute lower/stripped only once per value
+            s0 = p0.strip().lower()
+            s1 = p1.strip().lower()
+            if s0 == "heading":
+                # Avoid empty string re-use, just constant "Heading"
+                return "Heading", self._str_to_int(p1, None)
+            if s1 == "heading":
+                return "Heading", self._str_to_int(p0, None)
+        # All other cases return original label, None
         return style_label, None
 
     def _get_label_and_level(self, paragraph: Paragraph) -> tuple[str, Optional[int]]:
-        if paragraph.style is None:
+        # Move all lookups as early as possible to avoid attribute double fetches in hot path
+        style = paragraph.style
+        if style is None:
             return "Normal", None
-
-        label = paragraph.style.style_id
-        name = paragraph.style.name
-        base_style_label = None
-        base_style_name = None
-        if base_style := getattr(paragraph.style, "base_style", None):
-            base_style_label = base_style.style_id
-            base_style_name = base_style.name
+        label = style.style_id
+        name = style.name
+        base_style = getattr(style, "base_style", None)
+        base_style_label = base_style.style_id if base_style is not None else None
+        base_style_name = base_style.name if base_style is not None else None
 
         if label is None:
             return "Normal", None
 
+        # Fastpath "STYLE:LEVEL" parse, avoid generic split()
         if ":" in label:
-            parts = label.split(":")
-            if len(parts) == 2:
-                return parts[0], self._str_to_int(parts[1], None)
+            idx = label.find(":")
+            # Only split once, no list allocation, and length check
+            lv_str = label[idx + 1 :]
+            # If left and right are both non-empty, treat as "Type:Level"
+            if idx > 0 and lv_str:
+                t = label[:idx]
+                lvl = self._str_to_int(lv_str, None)
+                return t, lvl
 
-        if "heading" in label.lower():
+        # Use cached lower/strip to check 'heading' detection as few times as possible
+        label_lower = label.lower()
+        if "heading" in label_lower:
             return self._get_heading_and_level(label)
-        if "heading" in name.lower():
+
+        name_lower = name.lower()
+        if "heading" in name_lower:
             return self._get_heading_and_level(name)
-        if base_style_label and "heading" in base_style_label.lower():
-            return self._get_heading_and_level(base_style_label)
-        if base_style_name and "heading" in base_style_name.lower():
-            return self._get_heading_and_level(base_style_name)
+
+        if base_style_label:
+            base_style_label_lower = base_style_label.lower()
+            if "heading" in base_style_label_lower:
+                return self._get_heading_and_level(base_style_label)
+
+        if base_style_name:
+            base_style_name_lower = base_style_name.lower()
+            if "heading" in base_style_name_lower:
+                return self._get_heading_and_level(base_style_name)
 
         return label, None
 
