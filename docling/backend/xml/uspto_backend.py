@@ -1436,74 +1436,89 @@ class XmlTable:
         Returns:
             Unified group column specifications.
         """
-        colinfo: dict[int, XmlTable.ColInfoType] = {}
-
-        if len(tgs) == 0:
+        colinfo = {}
+        if not tgs:
             return colinfo
 
+        # Pre-compile the regex patterns for efficiency
+        pt_re = re.compile("pt", re.I)
+        mm_re = re.compile("mm", re.I)
+
+        # Only one pass needed to build colinfo and offset_w0
+        offset_w0_set = set()
+        min_offsets = set()
         for itg, tg in enumerate(tgs):
+            group = tg["colinfo"]
+            offset = [0]
+            colwidth = []
+            offst = 0
+            temp_col_w0 = []
+            for info in group:
+                cw = info["colwidth"]
+                if "pt" in cw or "PT" in cw:
+                    cw = pt_re.sub("", cw)
+                if "mm" in cw or "MM" in cw:
+                    cw = mm_re.sub("", cw)
+                try:
+                    cw = int(cw)
+                except Exception:
+                    cw = float(cw)
+                colwidth.append(cw)
+                offset.append(offst + cw)
+                if cw == 0:
+                    temp_col_w0.append(offst)
+                offst += cw
+            # The initial [0] offset is already in offset, so append at the end
             colinfo[itg] = {
-                "offset": [],
-                "colwidth": [],
+                "offset": offset,
+                "colwidth": colwidth,
                 "cell_range": [],
                 "cell_offst": [0],
             }
-            offst = 0
-            for info in tg["colinfo"]:
-                cw = info["colwidth"]
-                cw = re.sub("pt", "", cw, flags=re.I)
-                cw = re.sub("mm", "", cw, flags=re.I)
-                try:
-                    cw = int(cw)
-                except BaseException:
-                    cw = float(cw)
-                colinfo[itg]["colwidth"].append(cw)
-                colinfo[itg]["offset"].append(offst)
-                offst += cw
-            colinfo[itg]["offset"].append(offst)
+            min_offsets.update(offset)
+            offset_w0_set.update(temp_col_w0)
 
-        min_colinfo: XmlTable.MinColInfoType = {"offset": [], "colwidth": []}
-
-        min_colinfo["offset"] = colinfo[0]["offset"]
-        offset_w0 = []
-        for itg, col in colinfo.items():
-            # keep track of col with 0 width
-            for ic, cw in enumerate(col["colwidth"]):
-                if cw == 0:
-                    offset_w0.append(col["offset"][ic])
-
-            min_colinfo["offset"] = sorted(set(col["offset"] + min_colinfo["offset"]))
-
+        # Build the unified offset/width from all groups
         # add back the 0 width cols to offset list
-        offset_w0 = list(set(offset_w0))
-        min_colinfo["offset"] = sorted(min_colinfo["offset"] + offset_w0)
+        all_offsets = min_offsets.union(offset_w0_set)
+        min_offsets_sorted = sorted(all_offsets)
 
-        for i in range(len(min_colinfo["offset"]) - 1):
-            min_colinfo["colwidth"].append(
-                min_colinfo["offset"][i + 1] - min_colinfo["offset"][i]
-            )
+        min_colwidth = [
+            min_offsets_sorted[i + 1] - min_offsets_sorted[i]
+            for i in range(len(min_offsets_sorted) - 1)
+        ]
 
-        for itg, col in colinfo.items():
+        min_colinfo = {"offset": min_offsets_sorted, "colwidth": min_colwidth}
+
+        # Now produce the cell_range/cell_offst for each group
+        min_len = len(min_offsets_sorted)
+        for col in colinfo.values():
             i = 1
             range_ = 1
-            for min_i in range(1, len(min_colinfo["offset"])):
-                min_offst = min_colinfo["offset"][min_i]
-                offst = col["offset"][i]
-                if min_offst == offst:
-                    if (
-                        len(col["offset"]) == i + 1
-                        and len(min_colinfo["offset"]) > min_i + 1
-                    ):
+            cell_range = col["cell_range"]
+            cell_offst = col["cell_offst"]
+            col_offsets = col["offset"]
+            offset_len = len(col_offsets)
+            for min_i in range(1, min_len):
+                min_offst = min_offsets_sorted[min_i]
+                offst = col_offsets[i] if i < offset_len else None
+                if offst is not None and min_offst == offst:
+                    # matches at the col boundary
+                    if offset_len == i + 1 and min_len > min_i + 1:
                         range_ += 1
                     else:
-                        col["cell_range"].append(range_)
-                        col["cell_offst"].append(col["cell_offst"][-1] + range_)
+                        cell_range.append(range_)
+                        cell_offst.append(cell_offst[-1] + range_)
                         range_ = 1
                         i += 1
-                elif min_offst < offst:
+                elif offst is not None and min_offst < offst:
                     range_ += 1
                 else:
-                    _log.debug("A USPTO XML table has wrong offsets.")
+                    import logging
+
+                    logging.getLogger(__name__).debug(
+                        "A USPTO XML table has wrong offsets."
+                    )
                     return {}
 
         return colinfo
