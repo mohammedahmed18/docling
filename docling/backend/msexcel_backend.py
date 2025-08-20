@@ -100,25 +100,24 @@ class MsExcelDocumentBackend(DeclarativeDocumentBackend, PaginatedDocumentBacken
         """
         super().__init__(in_doc, path_or_stream)
 
-        # Initialise the parents for the hierarchy
         self.max_levels = 10
 
-        self.parents: dict[int, Any] = {}
-        for i in range(-1, self.max_levels):
-            self.parents[i] = None
+        # Use a list instead of dict for dense integer keys; -1 maps to index 0
+        self.parents: list[Any] = [None] * (self.max_levels + 1)
+        # self.parents[i] with i in -1..9 corresponds to self.parents[i + 1]
 
-        self.workbook = None
         try:
-            if isinstance(self.path_or_stream, BytesIO):
-                self.workbook = load_workbook(filename=self.path_or_stream)
-
-            elif isinstance(self.path_or_stream, Path):
-                self.workbook = load_workbook(filename=str(self.path_or_stream))
-
-            self.valid = self.workbook is not None
+            source = self.path_or_stream
+            # Dispatch based on type
+            if isinstance(source, BytesIO):
+                workbook = load_workbook(filename=source)
+            else:
+                # Path or anything else supporting str
+                workbook = load_workbook(filename=str(source))
+            self.workbook = workbook
+            self.valid = True
         except Exception as e:
             self.valid = False
-
             raise RuntimeError(
                 f"MsExcelDocumentBackend could not load document with hash {self.document_hash}"
             ) from e
