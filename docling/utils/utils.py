@@ -38,10 +38,7 @@ def create_file_hash(path_or_stream: Union[BytesIO, Path]) -> str:
 
 
 def create_hash(string: str):
-    hasher = hashlib.sha256(usedforsecurity=False)
-    hasher.update(string.encode("utf-8"))
-
-    return hasher.hexdigest()
+    return hashlib.sha256(string.encode("utf-8")).hexdigest()
 
 
 def download_url_with_progress(url: str, progress: bool = False) -> BytesIO:
