@@ -120,37 +120,34 @@ class PyPdfiumPageBackend(PdfPageBackend):
     def _compute_text_cells(self) -> List[TextCell]:
         """Compute text cells from pypdfium."""
         with pypdfium2_lock:
-            if not self.text_page:
+            if self.text_page is None:
                 self.text_page = self._ppage.get_textpage()
+            # Cache text_page reference for use throughout
+            text_page = self.text_page
 
-        cells = []
-        cell_counter = 0
-
+            rect_count = text_page.count_rects()
+            rects = [text_page.get_rect(i) for i in range(rect_count)]
+            text_pieces = [text_page.get_text_bounded(*rect) for rect in rects]
         page_size = self.get_size()
 
-        with pypdfium2_lock:
-            for i in range(self.text_page.count_rects()):
-                rect = self.text_page.get_rect(i)
-                text_piece = self.text_page.get_text_bounded(*rect)
-                x0, y0, x1, y1 = rect
-                cells.append(
-                    TextCell(
-                        index=cell_counter,
-                        text=text_piece,
-                        orig=text_piece,
-                        from_ocr=False,
-                        rect=BoundingRectangle.from_bounding_box(
-                            BoundingBox(
-                                l=x0,
-                                b=y0,
-                                r=x1,
-                                t=y1,
-                                coord_origin=CoordOrigin.BOTTOMLEFT,
-                            )
-                        ).to_top_left_origin(page_size.height),
+        cells = [
+            TextCell(
+                index=i,
+                text=text_pieces[i],
+                orig=text_pieces[i],
+                from_ocr=False,
+                rect=BoundingRectangle.from_bounding_box(
+                    BoundingBox(
+                        l=rects[i][0],
+                        b=rects[i][1],
+                        r=rects[i][2],
+                        t=rects[i][3],
+                        coord_origin=CoordOrigin.BOTTOMLEFT,
                     )
-                )
-                cell_counter += 1
+                ).to_top_left_origin(page_size.height),
+            )
+            for i in range(len(rects))
+        ]
 
         # PyPdfium2 produces very fragmented cells, with sub-word level boundaries, in many PDFs.
         # The cell merging code below is to clean this up.
@@ -162,87 +159,95 @@ class PyPdfiumPageBackend(PdfPageBackend):
             if not cells:
                 return []
 
-            def group_rows(cells: List[TextCell]) -> List[List[TextCell]]:
-                rows = []
-                current_row = [cells[0]]
-                row_top = cells[0].rect.to_bounding_box().t
-                row_bottom = cells[0].rect.to_bounding_box().b
-                row_height = cells[0].rect.to_bounding_box().height
+            # Precompute bounding boxes for all cells to avoid repeated conversions
+            cell_boxes = [cell.rect.to_bounding_box() for cell in cells]
 
-                for cell in cells[1:]:
+            def group_rows(
+                cells: List[TextCell], cell_boxes: List[BoundingBox]
+            ) -> List[List[int]]:
+                rows = []
+                if not cells:
+                    return rows
+                current_row = [0]
+                row_top = cell_boxes[0].t
+                row_bottom = cell_boxes[0].b
+                row_height = cell_boxes[0].height
+
+                for idx in range(1, len(cells)):
+                    bbox = cell_boxes[idx]
                     vertical_threshold = row_height * vertical_threshold_factor
                     if (
-                        abs(cell.rect.to_bounding_box().t - row_top)
-                        <= vertical_threshold
-                        and abs(cell.rect.to_bounding_box().b - row_bottom)
-                        <= vertical_threshold
+                        abs(bbox.t - row_top) <= vertical_threshold
+                        and abs(bbox.b - row_bottom) <= vertical_threshold
                     ):
-                        current_row.append(cell)
-                        row_top = min(row_top, cell.rect.to_bounding_box().t)
-                        row_bottom = max(row_bottom, cell.rect.to_bounding_box().b)
+                        current_row.append(idx)
+                        row_top = min(row_top, bbox.t)
+                        row_bottom = max(row_bottom, bbox.b)
                         row_height = row_bottom - row_top
                     else:
                         rows.append(current_row)
-                        current_row = [cell]
-                        row_top = cell.rect.to_bounding_box().t
-                        row_bottom = cell.rect.to_bounding_box().b
-                        row_height = cell.rect.to_bounding_box().height
-
+                        current_row = [idx]
+                        row_top = bbox.t
+                        row_bottom = bbox.b
+                        row_height = bbox.height
                 if current_row:
                     rows.append(current_row)
-
                 return rows
 
-            def merge_row(row: List[TextCell]) -> List[TextCell]:
+            # Use local text_page reference to avoid reacquiring lock unnecessarily
+            def merge_row(row_indices: List[int]) -> List[TextCell]:
                 merged = []
-                current_group = [row[0]]
+                current_group = [row_indices[0]]
 
-                for cell in row[1:]:
-                    prev_cell = current_group[-1]
-                    avg_height = (
-                        prev_cell.rect.height + cell.rect.to_bounding_box().height
-                    ) / 2
+                for idx in row_indices[1:]:
+                    prev_cell_idx = current_group[-1]
+                    prev_bbox = cell_boxes[prev_cell_idx]
+                    curr_bbox = cell_boxes[idx]
+                    avg_height = (prev_bbox.height + curr_bbox.height) / 2
                     if (
-                        cell.rect.to_bounding_box().l
-                        - prev_cell.rect.to_bounding_box().r
+                        curr_bbox.l - prev_bbox.r
                         <= avg_height * horizontal_threshold_factor
                     ):
-                        current_group.append(cell)
+                        current_group.append(idx)
                     else:
                         merged.append(merge_group(current_group))
-                        current_group = [cell]
-
+                        current_group = [idx]
                 if current_group:
                     merged.append(merge_group(current_group))
-
                 return merged
 
-            def merge_group(group: List[TextCell]) -> TextCell:
-                if len(group) == 1:
-                    return group[0]
-
+            # We only need to lock for the actual PDFium access
+            def merge_group(group_indices: List[int]) -> TextCell:
+                if len(group_indices) == 1:
+                    idx = group_indices[0]
+                    return TextCell(
+                        index=cells[idx].index,
+                        text=cells[idx].text,
+                        orig=cells[idx].orig,
+                        rect=cells[idx].rect,
+                        from_ocr=False,
+                    )
                 merged_bbox = BoundingBox(
-                    l=min(cell.rect.to_bounding_box().l for cell in group),
-                    t=min(cell.rect.to_bounding_box().t for cell in group),
-                    r=max(cell.rect.to_bounding_box().r for cell in group),
-                    b=max(cell.rect.to_bounding_box().b for cell in group),
+                    l=min(cell_boxes[i].l for i in group_indices),
+                    t=min(cell_boxes[i].t for i in group_indices),
+                    r=max(cell_boxes[i].r for i in group_indices),
+                    b=max(cell_boxes[i].b for i in group_indices),
                 )
-
-                assert self._ppage is not None
-                self.text_page = self._ppage.get_textpage()
                 bbox = merged_bbox.to_bottom_left_origin(page_size.height)
-                merged_text = self.text_page.get_text_bounded(*bbox.as_tuple())
-
+                with pypdfium2_lock:
+                    merged_text = self.text_page.get_text_bounded(*bbox.as_tuple())
                 return TextCell(
-                    index=group[0].index,
+                    index=cells[group_indices[0]].index,
                     text=merged_text,
                     orig=merged_text,
                     rect=BoundingRectangle.from_bounding_box(merged_bbox),
                     from_ocr=False,
                 )
 
-            rows = group_rows(cells)
-            merged_cells = [cell for row in rows for cell in merge_row(row)]
+            row_indices = group_rows(cells, cell_boxes)
+            merged_cells = []
+            for row in row_indices:
+                merged_cells.extend(merge_row(row))
 
             for i, cell in enumerate(merged_cells, 1):
                 cell.index = i
