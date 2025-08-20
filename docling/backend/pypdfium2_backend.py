@@ -1,5 +1,4 @@
 import logging
-import random
 from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
@@ -15,12 +14,13 @@ from docling_core.types.doc.page import (
     SegmentedPdfPage,
     TextCell,
 )
-from PIL import Image, ImageDraw
+from PIL import Image
 from pypdfium2 import PdfTextPage
 from pypdfium2._helpers.misc import PdfiumError
 
 from docling.backend.pdf_backend import PdfDocumentBackend, PdfPageBackend
 from docling.utils.locks import pypdfium2_lock
+from docling.datamodel.document import InputDocument
 
 
 def get_pdf_page_geometry(
@@ -267,17 +267,17 @@ class PyPdfiumPageBackend(PdfPageBackend):
                     yield cropbox
 
     def get_text_in_rect(self, bbox: BoundingBox) -> str:
-        with pypdfium2_lock:
-            if not self.text_page:
-                self.text_page = self._ppage.get_textpage()
-
+        # Early out if text_page is missing/invalid
+        if not self.text_page:
+            return ""
+        # Convert coord origin if needed (cheap check)
         if bbox.coord_origin != CoordOrigin.BOTTOMLEFT:
-            bbox = bbox.to_bottom_left_origin(self.get_size().height)
-
+            # Only convert while holding the lock, as page height is needed
+            with pypdfium2_lock:
+                bbox = bbox.to_bottom_left_origin(self._ppage.get_height())
+        # Lock only for performing PDF reading
         with pypdfium2_lock:
-            text_piece = self.text_page.get_text_bounded(*bbox.as_tuple())
-
-        return text_piece
+            return self.text_page.get_text_bounded(*bbox.as_tuple())
 
     def get_segmented_page(self) -> Optional[SegmentedPdfPage]:
         if not self.valid:
